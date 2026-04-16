@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>White Live Background</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #ffffff; }
+    canvas { display: block; position: fixed; top: 0; left: 0; }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// ─────────────────────────────────────────────
+//  WHITE LIVE BACKGROUND
+//  Layers:
+//    1. Slow ink-wash blob shapes drifting in background
+//    2. Particle web — nodes + connecting lines
+//    3. Ripple rings on mouse click / auto
+//    4. Floating light orbs with lens-flare
+//    5. Scanline shimmer (very subtle)
+// ─────────────────────────────────────────────
+
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+
+let W, H, mouse = { x: -9999, y: -9999 };
+
+function resize() {
+  W = canvas.width  = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', () => { resize(); initAll(); });
+
+// ─── PALETTE (all very subtle tints on white) ───
+const TINTS = [
+  'rgba(180,200,255,',   // ice blue
+  'rgba(210,180,255,',   // soft lavender
+  'rgba(180,240,220,',   // mint
+  'rgba(255,200,200,',   // blush
+  'rgba(200,230,255,',   // sky
+  'rgba(255,230,190,',   // warm cream
+];
+function tint(i, a) { return TINTS[i % TINTS.length] + a + ')'; }
+
+// ════════════════════════════════════════════
+//  1. INK BLOBS  (large slow amorphous shapes)
+// ════════════════════════════════════════════
+let blobs = [];
+
+function initBlobs() {
+  blobs = [];
+  const n = Math.max(5, Math.floor(W * H / 150000));
+  for (let i = 0; i < n; i++) {
+    blobs.push(makeBlob(i));
+  }
+}
+
+function makeBlob(i) {
+  const r = Math.min(W, H) * (0.22 + Math.random() * 0.28);
+  return {
+    x: Math.random() * W, y: Math.random() * H,
+    r,
+    vx: (Math.random() - 0.5) * 0.28,
+    vy: (Math.random() - 0.5) * 0.28,
+    tint: i % TINTS.length,
+    alpha: 0.07 + Math.random() * 0.07,
+    wobble: Array.from({length: 6}, () => ({
+      a: Math.random() * Math.PI * 2,
+      spd: 0.003 + Math.random() * 0.006,
+      amp: 0.08 + Math.random() * 0.15,
+    })),
+    phase: Math.random() * Math.PI * 2,
+  };
+}
+
+function drawBlob(b) {
+  b.phase += 0.008;
+  b.x += b.vx; b.y += b.vy;
+  if (b.x < -b.r * 1.5) b.x = W + b.r;
+  if (b.x > W + b.r * 1.5) b.x = -b.r;
+  if (b.y < -b.r * 1.5) b.y = H + b.r;
+  if (b.y > H + b.r * 1.5) b.y = -b.r;
+
+  const pts = 48;
+  ctx.beginPath();
+  for (let i = 0; i <= pts; i++) {
+    const ang = (i / pts) * Math.PI * 2;
+    let rad = b.r;
+    for (const w of b.wobble) {
+      w.a += w.spd;
+      rad += Math.sin(ang * 3 + w.a) * b.r * w.amp;
+    }
+    const px = b.x + Math.cos(ang) * rad;
+    const py = b.y + Math.sin(ang) * rad;
+    i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+
+  const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r * 1.4);
+  g.addColorStop(0,   tint(b.tint, b.alpha));
+  g.addColorStop(0.5, tint(b.tint, b.alpha * 0.5));
+  g.addColorStop(1,   'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fill();
+}
+
+// ════════════════════════════════════════════
+//  2. PARTICLE WEB
+// ════════════════════════════════════════════
+let nodes = [];
+const MAX_DIST = 160;
+
+function initNodes() {
+  nodes = [];
+  const n = Math.max(40, Math.floor(W * H / 18000));
+  for (let i = 0; i < n; i++) nodes.push(makeNode());
+}
+
+function makeNode() {
+  return {
+    x: Math.random() * W, y: Math.random() * H,
+    vx: (Math.random() - 0.5) * 0.6,
+    vy: (Math.random() - 0.5) * 0.6,
+    r: 1.5 + Math.random() * 2.5,
+    tint: Math.floor(Math.random() * TINTS.length),
+    alpha: 0.3 + Math.random() * 0.4,
+    pulse: Math.random() * Math.PI * 2,
+    pspd: 0.02 + Math.random() * 0.03,
+  };
+}
+
+function drawNodes() {
+  // Lines
+  for (let i = 0; i < nodes.length; i++) {
+    const a = nodes[i];
+    for (let j = i + 1; j < nodes.length; j++) {
+      const b = nodes[j];
+      const dx = a.x - b.x, dy = a.y - b.y;
+      const d  = Math.sqrt(dx*dx + dy*dy);
+      if (d < MAX_DIST) {
+        const strength = 1 - d / MAX_DIST;
+        // Mouse proximity boost
+        const mdxa = a.x - mouse.x, mdya = a.y - mouse.y;
+        const mda  = Math.sqrt(mdxa*mdxa + mdya*mdya);
+        const boost = mda < 180 ? (1 - mda / 180) * 0.5 : 0;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.strokeStyle = tint(a.tint, (strength * 0.25 + boost).toFixed(3));
+        ctx.lineWidth = strength * 1.2;
+        ctx.stroke();
+      }
+    }
+  }
+
+  // Dots
+  for (const n of nodes) {
+    n.pulse += n.pspd;
+    const pr = n.r + Math.sin(n.pulse) * 1.2;
+
+    // Glow
+    const g = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, pr * 4);
+    g.addColorStop(0,   tint(n.tint, n.alpha));
+    g.addColorStop(1,   'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, pr * 4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Core
+    ctx.fillStyle = tint(n.tint, n.alpha + 0.3);
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, pr, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Move
+    n.x += n.vx; n.y += n.vy;
+
+    // Mouse repulsion
+    const mdx = n.x - mouse.x, mdy = n.y - mouse.y;
+    const md  = Math.sqrt(mdx*mdx + mdy*mdy);
+    if (md < 120 && md > 0) {
+      n.x += (mdx / md) * (120 - md) * 0.04;
+      n.y += (mdy / md) * (120 - md) * 0.04;
+    }
+
+    // Bounce
+    if (n.x < 0 || n.x > W) { n.vx *= -1; n.x = Math.max(0, Math.min(W, n.x)); }
+    if (n.y < 0 || n.y > H) { n.vy *= -1; n.y = Math.max(0, Math.min(H, n.y)); }
+  }
+}
+
+// ════════════════════════════════════════════
+//  3. RIPPLE RINGS
+// ════════════════════════════════════════════
+let ripples = [];
+let autoRippleTimer = 0;
+
+function addRipple(x, y, ti) {
+  ripples.push({ x, y, r: 0, life: 1, tint: ti !== undefined ? ti : Math.floor(Math.random()*TINTS.length), maxR: 80 + Math.random()*120 });
+}
+
+function drawRipples() {
+  autoRippleTimer++;
+  if (autoRippleTimer > 120 + Math.random() * 120) {
+    addRipple(Math.random() * W, Math.random() * H);
+    autoRippleTimer = 0;
+  }
+
+  for (let i = ripples.length - 1; i >= 0; i--) {
+    const rp = ripples[i];
+    rp.r    += (rp.maxR - rp.r) * 0.045;
+    rp.life -= 0.012;
+    if (rp.life <= 0) { ripples.splice(i, 1); continue; }
+
+    // Multiple concentric rings
+    for (let k = 0; k < 3; k++) {
+      const kr = rp.r * (1 - k * 0.22);
+      const ka = rp.life * (1 - k * 0.28) * 0.5;
+      ctx.beginPath();
+      ctx.arc(rp.x, rp.y, Math.max(0, kr), 0, Math.PI * 2);
+      ctx.strokeStyle = tint(rp.tint, ka.toFixed(3));
+      ctx.lineWidth = 1.5 - k * 0.4;
+      ctx.stroke();
+    }
+  }
+}
+
+// ════════════════════════════════════════════
+//  4. LIGHT ORBS  (bokeh / lens-flare style)
+// ════════════════════════════════════════════
+let orbs = [];
+
+function initOrbs() {
+  orbs = [];
+  const n = Math.max(8, Math.floor(W * H / 60000));
+  for (let i = 0; i < n; i++) {
+    orbs.push(makeOrb(i));
+  }
+}
+
+function makeOrb(i) {
+  const r = 20 + Math.random() * 80;
+  return {
+    x: Math.random() * W, y: Math.random() * H,
+    r, baseR: r,
+    vx: (Math.random() - 0.5) * 0.18,
+    vy: (Math.random() - 0.5) * 0.18,
+    tint: i % TINTS.length,
+    alpha: 0.08 + Math.random() * 0.10,
+    phase: Math.random() * Math.PI * 2,
+    pspd: 0.008 + Math.random() * 0.012,
+  };
+}
+
+function drawOrbs() {
+  for (const o of orbs) {
+    o.phase += o.pspd;
+    o.r = o.baseR + Math.sin(o.phase) * o.baseR * 0.15;
+    o.x += o.vx; o.y += o.vy;
+    if (o.x < -o.r * 2) o.x = W + o.r;
+    if (o.x > W + o.r * 2) o.x = -o.r;
+    if (o.y < -o.r * 2) o.y = H + o.r;
+    if (o.y > H + o.r * 2) o.y = -o.r;
+
+    const g = ctx.createRadialGradient(o.x - o.r*0.3, o.y - o.r*0.3, 0, o.x, o.y, o.r * 1.5);
+    g.addColorStop(0,   `rgba(255,255,255,${(o.alpha*1.8).toFixed(3)})`);
+    g.addColorStop(0.3, tint(o.tint, (o.alpha * 1.2).toFixed(3)));
+    g.addColorStop(1,   'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(o.x, o.y, o.r * 1.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Lens flare cross
+    const fa = o.alpha * 0.35;
+    ctx.strokeStyle = tint(o.tint, fa.toFixed(3));
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(o.x - o.r * 2.5, o.y);
+    ctx.lineTo(o.x + o.r * 2.5, o.y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(o.x, o.y - o.r * 2.5);
+    ctx.lineTo(o.x, o.y + o.r * 2.5);
+    ctx.stroke();
+  }
+}
+
+// ════════════════════════════════════════════
+//  5. GEOMETRIC FLOATING SHAPES
+// ════════════════════════════════════════════
+let shapes = [];
+
+function initShapes() {
+  shapes = [];
+  const n = Math.max(6, Math.floor(W * H / 80000));
+  for (let i = 0; i < n; i++) {
+    shapes.push(makeShape(i));
+  }
+}
+
+function makeShape(i) {
+  return {
+    x: Math.random() * W,
+    y: Math.random() * H,
+    size: 18 + Math.random() * 50,
+    sides: [3, 4, 5, 6][Math.floor(Math.random() * 4)],
+    rot: Math.random() * Math.PI * 2,
+    rotSpd: (Math.random() - 0.5) * 0.005,
+    vx: (Math.random() - 0.5) * 0.22,
+    vy: (Math.random() - 0.5) * 0.22,
+    tint: i % TINTS.length,
+    alpha: 0.05 + Math.random() * 0.07,
+    phase: Math.random() * Math.PI * 2,
+    pspd: 0.012 + Math.random() * 0.018,
+  };
+}
+
+function drawShapes() {
+  for (const s of shapes) {
+    s.rot   += s.rotSpd;
+    s.phase += s.pspd;
+    s.x += s.vx; s.y += s.vy;
+    if (s.x < -s.size * 2) s.x = W + s.size;
+    if (s.x > W + s.size * 2) s.x = -s.size;
+    if (s.y < -s.size * 2) s.y = H + s.size;
+    if (s.y > H + s.size * 2) s.y = -s.size;
+
+    const sz  = s.size + Math.sin(s.phase) * s.size * 0.12;
+    const alp = s.alpha + Math.sin(s.phase * 1.3) * 0.02;
+
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    ctx.rotate(s.rot);
+    ctx.beginPath();
+    for (let i = 0; i <= s.sides; i++) {
+      const ang = (i / s.sides) * Math.PI * 2 - Math.PI / 2;
+      const px = Math.cos(ang) * sz, py = Math.sin(ang) * sz;
+      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.strokeStyle = tint(s.tint, alp.toFixed(3));
+    ctx.lineWidth   = 1.2;
+    ctx.stroke();
+
+    // Fill with very faint tint
+    ctx.fillStyle = tint(s.tint, (alp * 0.3).toFixed(3));
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ════════════════════════════════════════════
+//  6. MOUSE TRAIL
+// ════════════════════════════════════════════
+let trail = [];
+
+window.addEventListener('mousemove', e => {
+  mouse.x = e.clientX;
+  mouse.y = e.clientY;
+  trail.push({ x: e.clientX, y: e.clientY, life: 1, tint: Math.floor(Math.random()*TINTS.length) });
+  if (trail.length > 60) trail.shift();
+});
+
+window.addEventListener('touchmove', e => {
+  mouse.x = e.touches[0].clientX;
+  mouse.y = e.touches[0].clientY;
+}, { passive: true });
+
+window.addEventListener('click', e => {
+  addRipple(e.clientX, e.clientY, Math.floor(Math.random()*TINTS.length));
+  burst(e.clientX, e.clientY);
+});
+
+window.addEventListener('touchstart', e => {
+  addRipple(e.touches[0].clientX, e.touches[0].clientY);
+}, { passive: true });
+
+let particles = [];
+
+function burst(x, y) {
+  const ti = Math.floor(Math.random() * TINTS.length);
+  for (let i = 0; i < 18; i++) {
+    const ang = (Math.PI * 2 * i) / 18 + Math.random() * 0.3;
+    const spd = 1.5 + Math.random() * 3.5;
+    particles.push({ x, y, vx: Math.cos(ang)*spd, vy: Math.sin(ang)*spd, life: 1, r: 2+Math.random()*3, tint: ti });
+  }
+}
+
+function drawTrail() {
+  for (let i = trail.length - 1; i >= 0; i--) {
+    const t = trail[i];
+    t.life -= 0.032;
+    if (t.life <= 0) { trail.splice(i, 1); continue; }
+    const r = t.life * 8;
+    const g = ctx.createRadialGradient(t.x, t.y, 0, t.x, t.y, r);
+    g.addColorStop(0,   tint(t.tint, (t.life * 0.35).toFixed(3)));
+    g.addColorStop(1,   'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(t.x, t.y, r, 0, Math.PI*2);
+    ctx.fill();
+  }
+}
+
+function drawParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy;
+    p.vy += 0.06;
+    p.vx *= 0.97; p.vy *= 0.97;
+    p.life -= 0.022;
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+    ctx.fillStyle = tint(p.tint, (p.life * 0.55).toFixed(3));
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r * p.life, 0, Math.PI*2);
+    ctx.fill();
+  }
+}
+
+// ════════════════════════════════════════════
+//  7. SCANLINE SHIMMER (barely visible)
+// ════════════════════════════════════════════
+let shimmerOffset = 0;
+
+function drawShimmer() {
+  shimmerOffset = (shimmerOffset + 0.4) % (H * 2);
+  const g = ctx.createLinearGradient(0, shimmerOffset - H, 0, shimmerOffset);
+  g.addColorStop(0,   'rgba(255,255,255,0)');
+  g.addColorStop(0.48,'rgba(255,255,255,0)');
+  g.addColorStop(0.5, 'rgba(240,248,255,0.018)');
+  g.addColorStop(0.52,'rgba(255,255,255,0)');
+  g.addColorStop(1,   'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
+// ════════════════════════════════════════════
+//  INIT + LOOP
+// ════════════════════════════════════════════
+function initAll() {
+  initBlobs();
+  initNodes();
+  initOrbs();
+  initShapes();
+}
+initAll();
+
+function loop() {
+  // White base
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+
+  drawBlob(blobs[0]); // draw a couple blobs first as deep background
+  if (blobs.length > 1) drawBlob(blobs[1]);
+
+  drawOrbs();
+
+  for (let i = 2; i < blobs.length; i++) drawBlob(blobs[i]);
+
+  drawShapes();
+  drawNodes();
+  drawRipples();
+  drawTrail();
+  drawParticles();
+  drawShimmer();
+
+  requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
